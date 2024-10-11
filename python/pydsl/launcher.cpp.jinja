@@ -1,0 +1,72 @@
+#include "cuda.h"
+#include <stdbool.h>
+#include <torch/extension.h>
+#include "c10/cuda/CUDAStream.h"
+#include <dlfcn.h>
+#include <cstdint>
+
+static inline void gpuAssert(CUresult code, const char *file, int line)
+{
+   if (code != CUDA_SUCCESS)
+   {
+      const char* prefix = "PyDSL Error [CUDA]: ";
+      const char* str;
+      cuGetErrorString(code, &str);
+      char err[1024] = {0};
+      strcat(err, prefix);
+      strcat(err, str);
+      PyGILState_STATE gil_state;
+      gil_state = PyGILState_Ensure();
+      PyErr_SetString(PyExc_RuntimeError, err);
+      PyGILState_Release(gil_state);
+   }
+}
+
+#define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+
+typedef CUresult (*cuLaunchKernelEx_t)(const CUlaunchConfig* config, CUfunction f, void** kernelParams, void** extra);
+
+static cuLaunchKernelEx_t getLaunchKernelExHandle() {
+  // Open the shared library
+  void* handle = dlopen("libcuda.so.1", RTLD_LAZY);
+  if (!handle) {
+    PyErr_SetString(PyExc_RuntimeError, "Failed to open libcuda.so.1");
+    return NULL;
+  }
+  // Clear any existing error
+  dlerror();
+  cuLaunchKernelEx_t cuLaunchKernelExHandle = (cuLaunchKernelEx_t)dlsym(handle, "cuLaunchKernelEx");
+  // Check for errors
+  const char *dlsym_error = dlerror();
+  if (dlsym_error) {
+    PyErr_SetString(PyExc_RuntimeError, "Failed to retrieve cuLaunchKernelEx from libcuda.so.1");
+    return NULL;
+  }
+  return cuLaunchKernelExHandle;
+}
+
+static void launch(int gridX, int gridY, int gridZ, int num_warps, int shared_memory, c10::Stream c10_stream, uintptr_t function_
+{%- for arg in comp_ctx.signature %}
+{{- ", " ~ arg.to_launcher_arg() ~ " arg" ~ loop.index}}
+{%- endfor %}) {
+{% for arg in comp_ctx.signature %}
+{{- arg.destruct_launcher_arg("arg" ~ loop.index) }}
+{%- endfor %}
+CUfunction function = reinterpret_cast<CUfunction>(function_);
+c10::cuda::CUDAStream cuda_stream(c10_stream);
+auto stream = cuda_stream.stream();
+  void *params[] = {
+{%- for arg in comp_ctx.signature %}
+{% if loop.index != 1 %} , {% endif %}
+{{- arg.construct_launcher_arg("arg" ~ loop.index) }}
+{%- endfor %}};
+  if (gridX*gridY*gridZ > 0) {
+      CUDA_CHECK(cuLaunchKernel(function, gridX, gridY, gridZ, 32*num_warps, 1, 1, shared_memory, stream, params, 0));
+  }
+}
+
+PYBIND11_MODULE({{mod_name}}, m)
+{
+  m.doc() = "Launcher for pydsl compiled module";
+  m.def("launch", launch);
+}
